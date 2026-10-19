@@ -1606,6 +1606,16 @@ static int fts_ts_probe_entry(struct fts_ts_data *ts_data)
 			dev_set_drvdata(ts_data->fts_touch_dev, ts_data);
 		}
 	}
+
+	/*
+	 * The first display unblank can happen before this driver probes, in
+	 * which case the fb notifier's first fts_ts_resume() is a no-op. Run
+	 * one resume cycle now so the controller leaves its power-on state and
+	 * touch works without a manual screen off/on.
+	 */
+	ts_data->suspended = true;
+	fts_ts_resume(ts_data->dev);
+
 	FTS_FUNC_EXIT();
 	return 0;
 

@@ -1,0 +1,119 @@
+name: Build miatoll kernel
+
+on:
+  push:
+    branches:
+      - stable-a17
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Image.gz + AnyKernel3
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex libssl-dev libelf-dev \
+            build-essential gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            python3 perl zip unzip cpio rsync device-tree-compiler
+          # Old AOSP clang may still link against libtinfo5.
+          sudo apt-get install -y libtinfo5 || true
+
+      - name: Fetch AOSP clang r383902
+        run: |
+          mkdir -p "$HOME/clang"
+          curl -fsSL \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r383902.tar.gz" \
+            | tar -xz -C "$HOME/clang"
+          "$HOME/clang/bin/clang" --version
+
+      - name: Integrate KernelSU v3.2.5
+        run: |
+          sh kernel/setup.sh v3.2.5
+          test -e drivers/kernelsu
+          grep -n 'kernelsu' drivers/Makefile drivers/Kconfig
+
+      - name: Configure kernel
+        run: |
+          export PATH="$HOME/clang/bin:$PATH"
+          make -j"$(nproc)" ARCH=arm64 O=out \
+            CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- \
+            vendor/xiaomi/miatoll_defconfig
+
+          echo "=== selected config ==="
+          grep -E '^CONFIG_(KSU|KPROBES|PID_NS|UTS_NS|IPC_NS|USER_NS|SYSVIPC|DEVTMPFS|FHANDLE|MACVLAN|IP6_NF_NAT|MEMCG|MEMCG_SWAP|FAIR_GROUP_SCHED|CFS_BANDWIDTH|LOG_BUF_SHIFT)=' out/.config || true
+          grep -E '^# CONFIG_(MEMCG|MEMCG_SWAP|FAIR_GROUP_SCHED|CFS_BANDWIDTH) is not set' out/.config || true
+
+          # Droidspaces requirements.
+          for opt in PID_NS UTS_NS IPC_NS USER_NS SYSVIPC DEVTMPFS FHANDLE MACVLAN IP6_NF_NAT KPROBES KSU; do
+            grep -q "^CONFIG_${opt}=y" out/.config || { echo "ERROR: CONFIG_${opt} is not enabled"; exit 1; }
+          done
+
+          # The user explicitly wants these left out (freeze / policy).
+          for opt in MEMCG MEMCG_SWAP FAIR_GROUP_SCHED CFS_BANDWIDTH; do
+            if grep -q "^CONFIG_${opt}=y" out/.config; then
+              echo "ERROR: CONFIG_${opt} unexpectedly enabled"
+              exit 1
+            fi
+          done
+
+      - name: Build Image.gz
+        run: |
+          export PATH="$HOME/clang/bin:$PATH"
+          export KBUILD_BUILD_USER=mad1mystic
+          export KBUILD_BUILD_HOST=github-actions
+          make -j"$(nproc)" ARCH=arm64 O=out \
+            CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- \
+            Image.gz
+          ls -lh out/arch/arm64/boot/Image.gz out/vmlinux out/System.map
+
+      - name: Package AnyKernel3
+        run: |
+          git clone --depth 1 https://github.com/osm0sis/AnyKernel3.git anykernel
+          cp out/arch/arm64/boot/Image.gz anykernel/
+          cd anykernel
+
+          sed -i 's|^kernel.string=.*|kernel.string=Kinesis A17 Stable (miatoll)|' anykernel.sh
+          sed -i 's|^device.name1=.*|device.name1=miatoll|' anykernel.sh
+          sed -i 's|^device.name2=.*|device.name2=excalibur|' anykernel.sh
+          sed -i 's|^device.name3=.*|device.name3=curtana|' anykernel.sh
+          sed -i 's|^device.name4=.*|device.name4=gram|' anykernel.sh
+          sed -i 's|^device.name5=.*|device.name5=joyeuse|' anykernel.sh
+          sed -i 's|^supported.versions=.*|supported.versions=11.0-17.0|' anykernel.sh
+          sed -i 's|^BLOCK=.*|BLOCK=/dev/block/bootdevice/by-name/boot;|' anykernel.sh
+          sed -i 's|^IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=0;|' anykernel.sh
+
+          # Drop the tuna-specific ramdisk/fstab examples from the template.
+          sed -i '/^# init.rc$/,/^append_file fstab.tuna "usbdisk" fstab;$/d' anykernel.sh
+
+          echo "=== anykernel.sh ==="
+          grep -nE 'kernel.string|do\.|device\.name|supported\.versions|BLOCK=|IS_SLOT_DEVICE|dump_boot|write_boot' anykernel.sh
+          test -f Image.gz
+          zip -r9 "../AnyKernel3-miatoll-${GITHUB_SHA::8}.zip" * -x .git/*
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: miatoll-kernel-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            AnyKernel3-miatoll-*.zip
+            out/arch/arm64/boot/Image.gz
+            out/System.map
+            out/.config
