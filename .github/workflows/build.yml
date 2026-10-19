@@ -41,7 +41,10 @@ jobs:
 
       - name: Integrate KernelSU v3.2.5
         run: |
-          sh kernel/setup.sh v3.2.5
+          curl -fsSL \
+            "https://raw.githubusercontent.com/tiann/KernelSU/v3.2.5/kernel/setup.sh" \
+            -o /tmp/ksu-setup.sh
+          sh /tmp/ksu-setup.sh v3.2.5
           test -e drivers/kernelsu
           grep -n 'kernelsu' drivers/Makefile drivers/Kconfig
 
