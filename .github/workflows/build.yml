@@ -129,7 +129,7 @@ jobs:
           cp out/arch/arm64/boot/Image.gz anykernel/
           cd anykernel
 
-          sed -i 's|^kernel.string=.*|kernel.string=Kinesis A17 TEST (miatoll)|' anykernel.sh
+          sed -i 's|^kernel.string=.*|kernel.string=Mystic Kernel (miatoll)|' anykernel.sh
           sed -i 's|^device.name1=.*|device.name1=miatoll|' anykernel.sh
           sed -i 's|^device.name2=.*|device.name2=excalibur|' anykernel.sh
           sed -i 's|^device.name3=.*|device.name3=curtana|' anykernel.sh
@@ -180,28 +180,27 @@ jobs:
           tag="a17-${GITHUB_RUN_NUMBER}"
 
           notes="$(cat <<EOF
-          **Status: TEST BUILD** — kprobe-free KSU hardening + SELinux audit logging.
-          **Kernel:** Kinesis A17 (Linux 4.14.357) for miatoll/excalibur
+          **Status: TEST BUILD** — Mystic Kernel. Ghost-touch fix + kernel rename.
+          **Kernel:** Mystic Kernel (Linux 4.14.357) for miatoll/excalibur
           **KernelSU:** v3.2.5 (ksuver 32522, 4.14 syscall-table hooks; selinux_hide kprobe disabled)
           **Commit:** ${GITHUB_SHA}
           **SHA1:** ${sha1}
 
           **Changes**
-          - Disabled CONFIG_KPROBES entirely. Its only user on this tree was the
-            KernelSU selinux_hide slow_avc_audit hook, which faulted (undefined
-            instruction) in the AVC audit path and caused the bootloop. Removes
-            the whole failure class instead of just the single hook.
-          - Disabled CONFIG_SHADOW_CALL_STACK to match the previously working
-            kernel (avoids SCS interactions with KSU's 4.14 branch hooks).
-          - Enabled CONFIG_AUDIT (AUDITSYSCALL stays off) so SELinux denials are
-            logged; needed to diagnose app/freeze issues.
-          - Kept MEMCG + FAIR_GROUP_SCHED (Android 17 cgroup v2 memory/cpu
-            controllers); MEMCG_SWAP / CFS_BANDWIDTH still disabled.
+          - RENAMED to Mystic Kernel (localversion "-mystic").
+          - GHOST TOUCH FIX: re-enabled FocalTech FT8756 firmware auto-upgrade
+            (FTS_AUTO_UPGRADE_EN=1). The aftermarket FT8756 panel now flashes
+            /vendor/firmware/focaltech_ts_fw_huaxing.bin at boot, exactly like the
+            known-good kernel. a17-8 disabled this, leaving the touch IC on stale
+            firmware which produced severe ghost touches.
+          - Kept the FT8756 probe resume/init fix (dead-until-screen-cycle).
+          - KPROBES disabled, SHADOW_CALL_STACK disabled, AUDIT enabled
+            (AUDITSYSCALL off) so SELinux denials are logged for app/freeze debugging.
+          - MEMCG + FAIR_GROUP_SCHED on; MEMCG_SWAP / CFS_BANDWIDTH off.
           - Droidspaces: namespaces, SysV IPC, devtmpfs, FHANDLE, macvlan, IPv6 NAT
-          - FocalTech FT8756: auto-upgrade disabled + probe resume/init fix
           - KernelSU integrated (official manager-compatible)
 
-          Flash the ZIP in recovery. Keep your previous kernel ZIP for rollback.
+          Flash the ZIP in recovery. Keep a17-8 (milestone) for rollback.
           EOF
           )"
 
@@ -210,5 +209,5 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --prerelease \
-            --title "Kinesis A17 TEST #${GITHUB_RUN_NUMBER}" \
+            --title "Mystic Kernel A17 TEST #${GITHUB_RUN_NUMBER}" \
             --notes "$notes"
