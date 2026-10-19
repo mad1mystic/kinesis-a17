@@ -58,6 +58,14 @@ jobs:
           grep -n 'kernelsu' drivers/Makefile drivers/Kconfig
           grep -n 'KSU_VERSION' KernelSU/kernel/Makefile | head -2
 
+          # 4.14 arm64: backslashxx v3.2.5 selinux_hide registers a kprobe on
+          # slow_avc_audit; its trampoline faults on the first AVC audit
+          # (undefined instruction) and panics boot ~0.5s later. Disable the
+          # kprobe + rodata fops hijack; keep KSU's SELinux policy rules.
+          echo 'LS0tIGEva2VybmVsL2ZlYXR1cmUvc2VsaW51eF9oaWRlLmMKKysrIGIva2VybmVsL2ZlYXR1cmUvc2VsaW51eF9oaWRlLmMKQEAgLTIzNCw3ICsyMzQsNyBAQAogCQlwcl9pbmZvKCJzZWxpbnV4X2hpZGU6IHNpZCBncmFiIGZhaWw/XG4iKTsKIAogI2lmIGRlZmluZWQoQ09ORklHX0tQUk9CRVMpCi0Jc2xvd19hdmNfYXVkaXRfa3AgPSBpbml0X2twcm9iZSgic2xvd19hdmNfYXVkaXQiLCBzbG93X2F2Y19hdWRpdF9wcmVfaGFuZGxlcik7CisJc2xvd19hdmNfYXVkaXRfa3AgPSBOVUxMOyAodm9pZClpbml0X2twcm9iZTsgKHZvaWQpc2xvd19hdmNfYXVkaXRfcHJlX2hhbmRsZXI7IC8qIDQuMTQ6IGtwcm9iZSBmYXVsdHMgKi8KICNlbmRpZgogCiAJa3N1X3NlbGludXhfaGlkZV9lbmFibGVkID0gdHJ1ZTsKQEAgLTUwNSwyNCArNTA1LDggQEAKIAkvLyBjb25zdCBjaGFyICphZGJyb290X2FyZ3NbXSA9IHsgImFkYnJvb3QiLCBOVUxMIH07CiAJLy8ga3N1X2FkZF9zaGl0X3RvX2xpc3QoS1NVX1NFUE9MSUNZX0NNRF9UWVBFLCBhZGJyb290X2FyZ3MpOwogCi0Ja3N1X3NlbGludXhfaGlkZV9lbmFibGUoKTsKLQlrc3VfaW5pdF9ob29rX3NlbGludXhfdHJhbnNhY3Rpb25fd3JpdGUoKTsKLQotCWludCB0cmllcyA9IDA7Ci10cnlfYWdhaW46Ci0JaWYgKCFrc3VfcHJlcGFyZV9mYWtlX3N0YXR1c19wYWdlKCkpCi0JCWdvdG8gcGFnZV9vazsKLQkJCi0JbXNsZWVwKDEwMDApOwotCXRyaWVzID0gdHJpZXMgKyAxOwotCWlmICh0cmllcyA+IDEwKQotCQlyZXR1cm4gMDsKLQotCWdvdG8gdHJ5X2FnYWluOwotCi1wYWdlX29rOgotCWtzdV9pbml0X2hvb2tfc2VsaW51eF9zdGF0dXNfb3BlbigpOwotCisJLyogNC4xNDogc2VsaW51eF9oaWRlIGtwcm9iZSArIHJvZGF0YSBmb3BzIGhpamFjayBwYW5pYyB0aGUga2VybmVsLgorCSAqIEtTVSBTRUxpbnV4IHBvbGljeSBydWxlcyBhYm92ZSBhcmUga2VwdDsgc2tpcCB0aGUgaGlkaW5nIG1hY2hpbmVyeS4gKi8KIAlyZXR1cm4gMDsKIH0KIAo=' | base64 -d > /tmp/ksu-414-selinux-hide.patch
+          ( cd KernelSU && patch -p1 < /tmp/ksu-414-selinux-hide.patch )
+          grep -n 'slow_avc_audit_kp = NULL' KernelSU/kernel/feature/selinux_hide.c
+
       - name: Configure kernel
         run: |
           export PATH="$HOME/clang/bin:$PATH"
@@ -156,13 +164,16 @@ jobs:
           tag="a17-${GITHUB_RUN_NUMBER}"
 
           notes="$(cat <<EOF
-          **Status: TEST BUILD** — boot-hang fix (memory cgroup re-enabled).
+          **Status: TEST BUILD** — KSU selinux_hide kprobe bootloop fix.
           **Kernel:** Kinesis A17 (Linux 4.14.357) for miatoll/excalibur
-          **KernelSU:** v3.2.5 (ksuver 32522, 4.14 syscall-table hooks)
+          **KernelSU:** v3.2.5 (ksuver 32522, 4.14 syscall-table hooks; selinux_hide kprobe disabled)
           **Commit:** ${GITHUB_SHA}
           **SHA1:** ${sha1}
 
           **Changes**
+          - Fixed bootloop/panic: disabled KernelSU selinux_hide's slow_avc_audit
+            kprobe, which faulted (undefined instruction) in the AVC audit path
+            ~0.5s after registration and rebooted the device
           - Re-enabled MEMCG + FAIR_GROUP_SCHED (required by Android 17 cgroup v2;
             previous build hung right after post-fs-data without the memory controller)
           - MEMCG_SWAP / CFS_BANDWIDTH still disabled (freeze/policy)
