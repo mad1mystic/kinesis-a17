@@ -68,16 +68,18 @@ jobs:
             vendor/xiaomi/miatoll_defconfig
 
           echo "=== selected config ==="
-          grep -E '^CONFIG_(KSU|KPROBES|PID_NS|UTS_NS|IPC_NS|USER_NS|SYSVIPC|DEVTMPFS|FHANDLE|MACVLAN|IP6_NF_NAT|MEMCG|MEMCG_SWAP|FAIR_GROUP_SCHED|CFS_BANDWIDTH|LOG_BUF_SHIFT)=' out/.config || true
-          grep -E '^# CONFIG_(MEMCG|MEMCG_SWAP|FAIR_GROUP_SCHED|CFS_BANDWIDTH) is not set' out/.config || true
+          grep -E '^CONFIG_(KSU|KPROBES|PID_NS|UTS_NS|IPC_NS|USER_NS|SYSVIPC|DEVTMPFS|FHANDLE|MACVLAN|IP6_NF_NAT|MEMCG|MEMCG_SWAP|FAIR_GROUP_SCHED|CFS_BANDWIDTH|FAKE_UNAME_5_10|LOG_BUF_SHIFT)=' out/.config || true
+          grep -E '^# CONFIG_(MEMCG_SWAP|CFS_BANDWIDTH) is not set' out/.config || true
 
-          # Droidspaces + KernelSU requirements.
-          for opt in PID_NS UTS_NS IPC_NS USER_NS SYSVIPC DEVTMPFS FHANDLE MACVLAN IP6_NF_NAT KPROBES KSU KSU_TAMPER_SYSCALL_TABLE KSU_LSM_SECURITY_HOOKS; do
+          # Droidspaces + KernelSU requirements.  MEMCG + FAIR_GROUP_SCHED
+          # are required for Android 17's cgroup v2 memory/cpu controllers;
+          # without them init/zygote stall right after post-fs-data.
+          for opt in PID_NS UTS_NS IPC_NS USER_NS SYSVIPC DEVTMPFS FHANDLE MACVLAN IP6_NF_NAT KPROBES KSU KSU_TAMPER_SYSCALL_TABLE KSU_LSM_SECURITY_HOOKS MEMCG FAIR_GROUP_SCHED FAKE_UNAME_5_10; do
             grep -q "^CONFIG_${opt}=y" out/.config || { echo "ERROR: CONFIG_${opt} is not enabled"; exit 1; }
           done
 
-          # The user explicitly wants these left out (freeze / policy).
-          for opt in MEMCG MEMCG_SWAP FAIR_GROUP_SCHED CFS_BANDWIDTH; do
+          # Keep these left out (freeze / policy).
+          for opt in MEMCG_SWAP CFS_BANDWIDTH; do
             if grep -q "^CONFIG_${opt}=y" out/.config; then
               echo "ERROR: CONFIG_${opt} unexpectedly enabled"
               exit 1
@@ -94,7 +96,8 @@ jobs:
             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
             LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- \
             Image.gz
-          ls -lh out/arch/arm64/boot/Image.gz out/vmlinux out/System.map
+          cp out/.config out/kernel.config
+          ls -lh out/arch/arm64/boot/Image.gz out/vmlinux out/System.map out/kernel.config
 
       - name: Package AnyKernel3
         run: |
@@ -102,7 +105,7 @@ jobs:
           cp out/arch/arm64/boot/Image.gz anykernel/
           cd anykernel
 
-          sed -i 's|^kernel.string=.*|kernel.string=Kinesis A17 Stable (miatoll)|' anykernel.sh
+          sed -i 's|^kernel.string=.*|kernel.string=Kinesis A17 TEST (miatoll)|' anykernel.sh
           sed -i 's|^device.name1=.*|device.name1=miatoll|' anykernel.sh
           sed -i 's|^device.name2=.*|device.name2=excalibur|' anykernel.sh
           sed -i 's|^device.name3=.*|device.name3=curtana|' anykernel.sh
@@ -129,6 +132,7 @@ jobs:
             AnyKernel3-miatoll-*.zip
             out/arch/arm64/boot/Image.gz
             out/System.map
+            out/kernel.config
             out/.config
 
   release:
@@ -152,15 +156,17 @@ jobs:
           tag="a17-${GITHUB_RUN_NUMBER}"
 
           notes="$(cat <<EOF
+          **Status: TEST BUILD** — boot-hang fix (memory cgroup re-enabled).
           **Kernel:** Kinesis A17 (Linux 4.14.357) for miatoll/excalibur
           **KernelSU:** v3.2.5 (ksuver 32522, 4.14 syscall-table hooks)
           **Commit:** ${GITHUB_SHA}
           **SHA1:** ${sha1}
 
           **Changes**
-          - A17 / VoltageOS compatibility
+          - Re-enabled MEMCG + FAIR_GROUP_SCHED (required by Android 17 cgroup v2;
+            previous build hung right after post-fs-data without the memory controller)
+          - MEMCG_SWAP / CFS_BANDWIDTH still disabled (freeze/policy)
           - Droidspaces: namespaces, SysV IPC, devtmpfs, FHANDLE, macvlan, IPv6 NAT
-          - MEMCG / MEMCG_SWAP / CFS_BANDWIDTH disabled
           - FocalTech FT8756: auto-upgrade disabled + probe resume/init fix
           - KernelSU integrated (official manager-compatible)
 
@@ -172,5 +178,6 @@ jobs:
           gh release create "$tag" "$zip_file" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "Kinesis A17 Stable #${GITHUB_RUN_NUMBER}" \
+            --prerelease \
+            --title "Kinesis A17 TEST #${GITHUB_RUN_NUMBER}" \
             --notes "$notes"
