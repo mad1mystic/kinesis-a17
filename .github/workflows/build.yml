@@ -39,14 +39,24 @@ jobs:
             | tar -xz -C "$HOME/clang"
           "$HOME/clang/bin/clang" --version
 
-      - name: Integrate KernelSU v3.2.5
+      - name: Integrate KernelSU v3.2.5 (backslashxx 4.14 manual hooks)
         run: |
-          curl -fsSL \
-            "https://raw.githubusercontent.com/tiann/KernelSU/v3.2.5/kernel/setup.sh" \
-            -o /tmp/ksu-setup.sh
-          sh /tmp/ksu-setup.sh v3.2.5
-          test -e drivers/kernelsu
+          # Upstream v3.2.5 cannot build on 4.14: it assumes arm64 syscall
+          # wrappers (__arm64_sys_*) and MODULE_IMPORT_NS.  backslashxx's
+          # fork keeps the v3.2.5 supercall/uapi and adds the legacy
+          # syscall-table + LSM hook path used by 4.14 kernels.
+          git clone --depth 1 --branch v3.2.5 \
+            https://github.com/backslashxx/KernelSU KernelSU
+
+          ln -sfn ../KernelSU/kernel drivers/kernelsu
+          grep -q 'kernelsu' drivers/Makefile || \
+            printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || \
+            sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+
+          test -e drivers/kernelsu/Kconfig
           grep -n 'kernelsu' drivers/Makefile drivers/Kconfig
+          grep -n 'KSU_VERSION' KernelSU/kernel/Makefile | head -2
 
       - name: Configure kernel
         run: |
@@ -61,8 +71,8 @@ jobs:
           grep -E '^CONFIG_(KSU|KPROBES|PID_NS|UTS_NS|IPC_NS|USER_NS|SYSVIPC|DEVTMPFS|FHANDLE|MACVLAN|IP6_NF_NAT|MEMCG|MEMCG_SWAP|FAIR_GROUP_SCHED|CFS_BANDWIDTH|LOG_BUF_SHIFT)=' out/.config || true
           grep -E '^# CONFIG_(MEMCG|MEMCG_SWAP|FAIR_GROUP_SCHED|CFS_BANDWIDTH) is not set' out/.config || true
 
-          # Droidspaces requirements.
-          for opt in PID_NS UTS_NS IPC_NS USER_NS SYSVIPC DEVTMPFS FHANDLE MACVLAN IP6_NF_NAT KPROBES KSU; do
+          # Droidspaces + KernelSU requirements.
+          for opt in PID_NS UTS_NS IPC_NS USER_NS SYSVIPC DEVTMPFS FHANDLE MACVLAN IP6_NF_NAT KPROBES KSU KSU_TAMPER_SYSCALL_TABLE KSU_LSM_SECURITY_HOOKS; do
             grep -q "^CONFIG_${opt}=y" out/.config || { echo "ERROR: CONFIG_${opt} is not enabled"; exit 1; }
           done
 
@@ -120,3 +130,47 @@ jobs:
             out/arch/arm64/boot/Image.gz
             out/System.map
             out/.config
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download kernel artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: miatoll-kernel-${{ github.sha }}
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          zip_file="$(ls AnyKernel3-miatoll-*.zip | head -1)"
+          sha1="$(sha1sum "$zip_file" | awk '{print $1}')"
+          tag="a17-${GITHUB_RUN_NUMBER}"
+
+          notes="$(cat <<EOF
+          **Kernel:** Kinesis A17 (Linux 4.14.357) for miatoll/excalibur
+          **KernelSU:** v3.2.5 (ksuver 32522, 4.14 syscall-table hooks)
+          **Commit:** ${GITHUB_SHA}
+          **SHA1:** ${sha1}
+
+          **Changes**
+          - A17 / VoltageOS compatibility
+          - Droidspaces: namespaces, SysV IPC, devtmpfs, FHANDLE, macvlan, IPv6 NAT
+          - MEMCG / MEMCG_SWAP / CFS_BANDWIDTH disabled
+          - FocalTech FT8756: auto-upgrade disabled + probe resume/init fix
+          - KernelSU integrated (official manager-compatible)
+
+          Flash the ZIP in recovery. Keep your previous kernel ZIP for rollback.
+          EOF
+          )"
+
+          gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
+          gh release create "$tag" "$zip_file" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Kinesis A17 Stable #${GITHUB_RUN_NUMBER}" \
+            --notes "$notes"
