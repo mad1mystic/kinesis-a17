@@ -92,13 +92,13 @@ jobs:
             olddefconfig
 
           echo "=== selected config ==="
-          grep -E '^CONFIG_(KSU|KPROBES|PID_NS|UTS_NS|IPC_NS|USER_NS|SYSVIPC|DEVTMPFS|FHANDLE|MACVLAN|IP6_NF_NAT|MEMCG|MEMCG_SWAP|FAIR_GROUP_SCHED|CFS_BANDWIDTH|AUDIT|AUDITSYSCALL|SHADOW_CALL_STACK|VMAP_STACK|FAKE_UNAME_5_10|LOG_BUF_SHIFT)=' out/.config || true
+          grep -E '^CONFIG_(KSU|KPROBES|PID_NS|UTS_NS|IPC_NS|USER_NS|SYSVIPC|DEVTMPFS|FHANDLE|MACVLAN|IP6_NF_NAT|MEMCG|MEMCG_SWAP|FAIR_GROUP_SCHED|CFS_BANDWIDTH|AUDIT|AUDITSYSCALL|SHADOW_CALL_STACK|VMAP_STACK|FAKE_UNAME_5_10|VM_EVENT_COUNTERS|LOG_BUF_SHIFT)=' out/.config || true
           grep -E '^# CONFIG_(MEMCG_SWAP|CFS_BANDWIDTH|KPROBES|SHADOW_CALL_STACK|AUDITSYSCALL) is not set' out/.config || true
 
           # Droidspaces + KernelSU requirements.  MEMCG + FAIR_GROUP_SCHED
           # are required for Android 17's cgroup v2 memory/cpu controllers;
           # without them init/zygote stall right after post-fs-data.
-          for opt in PID_NS UTS_NS IPC_NS USER_NS SYSVIPC DEVTMPFS FHANDLE MACVLAN IP6_NF_NAT KSU KSU_TAMPER_SYSCALL_TABLE KSU_LSM_SECURITY_HOOKS MEMCG FAIR_GROUP_SCHED AUDIT FAKE_UNAME_5_10; do
+          for opt in PID_NS UTS_NS IPC_NS USER_NS SYSVIPC DEVTMPFS FHANDLE MACVLAN IP6_NF_NAT KSU KSU_TAMPER_SYSCALL_TABLE KSU_LSM_SECURITY_HOOKS MEMCG FAIR_GROUP_SCHED AUDIT FAKE_UNAME_5_10 VM_EVENT_COUNTERS; do
             grep -q "^CONFIG_${opt}=y" out/.config || { echo "ERROR: CONFIG_${opt} is not enabled"; exit 1; }
           done
 
@@ -177,17 +177,20 @@ jobs:
         run: |
           zip_file="$(ls AnyKernel3-miatoll-*.zip | head -1)"
           sha1="$(sha1sum "$zip_file" | awk '{print $1}')"
-          tag="a17-${GITHUB_RUN_NUMBER}"
+          tag="a17-${GITHUB_RUN_NUMBER}-rc1"
 
           notes="$(cat <<EOF
-          **Status: TEST BUILD** — Mystic Kernel. Ghost-touch fix + kernel rename.
-          **Kernel:** Mystic Kernel (Linux 4.14.357) for miatoll/excalibur
+          **Status: RELEASE CANDIDATE** - Mystic Kernel for A17.
+          **Kernel:** Mystic Kernel (Linux 4.14.357, UTS 4.14.357-openela-mystic) for miatoll/excalibur
           **KernelSU:** v3.2.5 (ksuver 32522, 4.14 syscall-table hooks; selinux_hide kprobe disabled)
           **Commit:** ${GITHUB_SHA}
           **SHA1:** ${sha1}
 
           **Changes**
-          - RENAMED to Mystic Kernel (localversion "-mystic").
+          - RENAMED to Mystic Kernel (localversion "-mystic"); UTS release is
+            now 4.14.357-openela-mystic.
+          - LMK health: CONFIG_VM_EVENT_COUNTERS=y enables lmkd's vmstat
+            reclaim fallback (pgscan/pgsteal/allocstall/compact_stall).
           - GHOST TOUCH FIX: re-enabled FocalTech FT8756 firmware auto-upgrade
             (FTS_AUTO_UPGRADE_EN=1). The aftermarket FT8756 panel now flashes
             /vendor/firmware/focaltech_ts_fw_huaxing.bin at boot, exactly like the
@@ -200,6 +203,11 @@ jobs:
           - Droidspaces: namespaces, SysV IPC, devtmpfs, FHANDLE, macvlan, IPv6 NAT
           - KernelSU integrated (official manager-compatible)
 
+          **Known issues**
+          - Brave's native-only sandboxed process (AppZygote/zygote_next) can
+            hang system_server on launch. Brave is disabled for this RC; the
+            Droidspaces root/container removal test is still pending.
+
           Flash the ZIP in recovery. Keep a17-8 (milestone) for rollback.
           EOF
           )"
@@ -209,5 +217,5 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --prerelease \
-            --title "Mystic Kernel A17 TEST #${GITHUB_RUN_NUMBER}" \
+            --title "Mystic Kernel A17 RELEASE CANDIDATE - a17-${GITHUB_RUN_NUMBER}-rc1" \
             --notes "$notes"
