@@ -84,6 +84,7 @@ jobs:
             -d KPROBES \
             -d SHADOW_CALL_STACK \
             -e AUDIT \
+            -e UNMAP_KERNEL_AT_EL0 \
             -d AUDITSYSCALL
           make -j"$(nproc)" ARCH=arm64 O=out \
             CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
@@ -92,13 +93,13 @@ jobs:
             olddefconfig
 
           echo "=== selected config ==="
-          grep -E '^CONFIG_(KSU|KPROBES|PID_NS|UTS_NS|IPC_NS|USER_NS|SYSVIPC|DEVTMPFS|FHANDLE|MACVLAN|IP6_NF_NAT|MEMCG|MEMCG_SWAP|FAIR_GROUP_SCHED|CFS_BANDWIDTH|AUDIT|AUDITSYSCALL|SHADOW_CALL_STACK|VMAP_STACK|FAKE_UNAME_5_10|VM_EVENT_COUNTERS|LOG_BUF_SHIFT)=' out/.config || true
+          grep -E '^CONFIG_(KSU|KPROBES|PID_NS|UTS_NS|IPC_NS|USER_NS|SYSVIPC|DEVTMPFS|FHANDLE|MACVLAN|IP6_NF_NAT|MEMCG|MEMCG_SWAP|FAIR_GROUP_SCHED|CFS_BANDWIDTH|AUDIT|AUDITSYSCALL|SHADOW_CALL_STACK|VMAP_STACK|FAKE_UNAME_5_10|VM_EVENT_COUNTERS|UNMAP_KERNEL_AT_EL0|LOG_BUF_SHIFT)=' out/.config || true
           grep -E '^# CONFIG_(MEMCG_SWAP|CFS_BANDWIDTH|KPROBES|SHADOW_CALL_STACK|AUDITSYSCALL) is not set' out/.config || true
 
           # Droidspaces + KernelSU requirements.  MEMCG + FAIR_GROUP_SCHED
           # are required for Android 17's cgroup v2 memory/cpu controllers;
           # without them init/zygote stall right after post-fs-data.
-          for opt in PID_NS UTS_NS IPC_NS USER_NS SYSVIPC DEVTMPFS FHANDLE MACVLAN IP6_NF_NAT KSU KSU_TAMPER_SYSCALL_TABLE KSU_LSM_SECURITY_HOOKS MEMCG FAIR_GROUP_SCHED AUDIT FAKE_UNAME_5_10 VM_EVENT_COUNTERS; do
+          for opt in PID_NS UTS_NS IPC_NS USER_NS SYSVIPC DEVTMPFS FHANDLE MACVLAN IP6_NF_NAT KSU KSU_TAMPER_SYSCALL_TABLE KSU_LSM_SECURITY_HOOKS MEMCG FAIR_GROUP_SCHED AUDIT FAKE_UNAME_5_10 VM_EVENT_COUNTERS UNMAP_KERNEL_AT_EL0; do
             grep -q "^CONFIG_${opt}=y" out/.config || { echo "ERROR: CONFIG_${opt} is not enabled"; exit 1; }
           done
 
@@ -115,12 +116,22 @@ jobs:
           export PATH="$HOME/clang/bin:$PATH"
           export KBUILD_BUILD_USER=mad1mystic
           export KBUILD_BUILD_HOST=github-actions
+          # Regenerate the embedded /proc/config.gz from this build's .config;
+          # the previous RC embedded a stale stock "-perf" config.
+          rm -f out/kernel/config_data.gz
           make -j"$(nproc)" ARCH=arm64 O=out \
             CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
             LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- \
             Image.gz
           cp out/.config out/kernel.config
+          # KPTI must be present in the binary, not merely in .config.
+          # The previous RC had CONFIG_UNMAP_KERNEL_AT_EL0=y in config.gz but
+          # no KPTI code in vmlinux, so guard the actual image.
+          if ! grep -aq 'kernel page table isolation forced' out/vmlinux; then
+            echo "ERROR: KPTI code is missing from vmlinux"
+            exit 1
+          fi
           ls -lh out/arch/arm64/boot/Image.gz out/vmlinux out/System.map out/kernel.config
 
       - name: Package AnyKernel3
@@ -139,11 +150,16 @@ jobs:
           sed -i 's|^BLOCK=.*|BLOCK=/dev/block/bootdevice/by-name/boot;|' anykernel.sh
           sed -i 's|^IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=0;|' anykernel.sh
 
+          # The device DTB carries kpti=off. Appending kpti=on to the boot
+          # image cmdline makes the later token win at boot.
+          sed -i '/^dump_boot;/a patch_cmdline "kpti" "kpti=on";' anykernel.sh
+          grep -q 'patch_cmdline "kpti" "kpti=on"' anykernel.sh
+
           # Drop the tuna-specific ramdisk/fstab examples from the template.
           sed -i '/^# init.rc$/,/^append_file fstab.tuna "usbdisk" fstab;$/d' anykernel.sh
 
           echo "=== anykernel.sh ==="
-          grep -nE 'kernel.string|do\.|device\.name|supported\.versions|BLOCK=|IS_SLOT_DEVICE|dump_boot|write_boot' anykernel.sh
+          grep -nE 'kernel.string|do\.|device\.name|supported\.versions|BLOCK=|IS_SLOT_DEVICE|dump_boot|patch_cmdline|write_boot' anykernel.sh
           test -f Image.gz
           zip -r9 "../AnyKernel3-miatoll-${GITHUB_SHA::8}.zip" * -x .git/*
 
@@ -196,6 +212,9 @@ jobs:
             /vendor/firmware/focaltech_ts_fw_huaxing.bin at boot, exactly like the
             known-good kernel. a17-8 disabled this, leaving the touch IC on stale
             firmware which produced severe ghost touches.
+          - KPTI enabled: CONFIG_UNMAP_KERNEL_AT_EL0=y plus a kpti=on
+            boot-cmdline override (the device DTB still carries kpti=off).
+            Droidspaces/Shizuku configuration is unchanged.
           - Kept the FT8756 probe resume/init fix (dead-until-screen-cycle).
           - KPROBES disabled, SHADOW_CALL_STACK disabled, AUDIT enabled
             (AUDITSYSCALL off) so SELinux denials are logged for app/freeze debugging.

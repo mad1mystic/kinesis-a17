@@ -1654,6 +1654,14 @@ struct ncm_setup_desc {
 };
 
 static struct ncm_setup_desc *_ncm_setup_desc;
+/*
+ * The UEVENT setup device is global.  Multiple NCM instances (Android's
+ * primary gadget and USB-Arsenal's temporary gadget) share it, so only the
+ * last instance may destroy it.  Otherwise a duplicate f_ncm device is
+ * created, and ncm_free_inst() dereferences a freed/NULL descriptor.
+ */
+static DEFINE_MUTEX(ncm_setup_lock);
+static unsigned int ncm_setup_refs;
 
 #define MIRROR_LINK_STRING_LENGTH_MAX 32
 static void ncm_setup_work(struct work_struct *data)
@@ -1686,17 +1694,26 @@ int ncm_ctrlrequest(struct usb_composite_dev *cdev,
 
 static void ncm_free_inst(struct usb_function_instance *f)
 {
-	struct f_ncm_opts *opts;
+	struct f_ncm_opts *opts = container_of(f, struct f_ncm_opts, func_inst);
 
 #ifdef CONFIG_USB_CONFIGFS_UEVENT
-	/* release _ncm_setup_desc related resource */
-	device_destroy(_ncm_setup_desc->device->class,
-		_ncm_setup_desc->device->devt);
-	cancel_work(&_ncm_setup_desc->work);
-	kfree(_ncm_setup_desc);
+	if (opts->setup_ref) {
+		mutex_lock(&ncm_setup_lock);
+		opts->setup_ref = false;
+		if (--ncm_setup_refs == 0 && _ncm_setup_desc) {
+			struct ncm_setup_desc *desc = _ncm_setup_desc;
+
+			_ncm_setup_desc = NULL;
+			cancel_work_sync(&desc->work);
+			if (!IS_ERR_OR_NULL(desc->device))
+				device_destroy(desc->device->class,
+					       desc->device->devt);
+			kfree(desc);
+		}
+		mutex_unlock(&ncm_setup_lock);
+	}
 #endif
 
-	opts = container_of(f, struct f_ncm_opts, func_inst);
 	if (opts->bound)
 		gether_cleanup(netdev_priv(opts->net));
 	else
@@ -1711,6 +1728,10 @@ static struct usb_function_instance *ncm_alloc_inst(void)
 	struct usb_os_desc *descs[1];
 	char *names[1];
 	struct config_group *ncm_interf_group;
+#ifdef CONFIG_USB_CONFIGFS_UEVENT
+	struct ncm_setup_desc *desc;
+	int ret;
+#endif
 
 	opts = kzalloc(sizeof(*opts), GFP_KERNEL);
 	if (!opts)
@@ -1741,14 +1762,36 @@ static struct usb_function_instance *ncm_alloc_inst(void)
 	opts->ncm_interf_group = ncm_interf_group;
 
 #ifdef CONFIG_USB_CONFIGFS_UEVENT
-	_ncm_setup_desc = kzalloc(sizeof(*_ncm_setup_desc), GFP_KERNEL);
-	if (!_ncm_setup_desc)
-		return ERR_PTR(-ENOMEM);
-	INIT_WORK(&_ncm_setup_desc->work, ncm_setup_work);
-	_ncm_setup_desc->device = create_function_device("f_ncm");
+	mutex_lock(&ncm_setup_lock);
+	if (!_ncm_setup_desc) {
+		desc = kzalloc(sizeof(*desc), GFP_KERNEL);
+		if (!desc) {
+			mutex_unlock(&ncm_setup_lock);
+			ret = -ENOMEM;
+			goto err_free_inst;
+		}
+		INIT_WORK(&desc->work, ncm_setup_work);
+		desc->device = create_function_device("f_ncm");
+		if (IS_ERR_OR_NULL(desc->device)) {
+			ret = desc->device ? PTR_ERR(desc->device) : -ENODEV;
+			kfree(desc);
+			mutex_unlock(&ncm_setup_lock);
+			goto err_free_inst;
+		}
+		_ncm_setup_desc = desc;
+	}
+	ncm_setup_refs++;
+	opts->setup_ref = true;
+	mutex_unlock(&ncm_setup_lock);
 #endif
 
 	return &opts->func_inst;
+
+#ifdef CONFIG_USB_CONFIGFS_UEVENT
+err_free_inst:
+	ncm_free_inst(&opts->func_inst);
+	return ERR_PTR(ret);
+#endif
 }
 
 static void ncm_free(struct usb_function *f)

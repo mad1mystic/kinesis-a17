@@ -34,6 +34,9 @@ struct f_ncm_opts {
 	 */
 	struct mutex			lock;
 	int				refcnt;
+#ifdef CONFIG_USB_CONFIGFS_UEVENT
+	bool				setup_ref;
+#endif
 };
 
 extern struct device *create_function_device(char *name);
