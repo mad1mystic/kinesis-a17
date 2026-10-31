@@ -75,13 +75,15 @@ jobs:
             LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- \
             vendor/xiaomi/miatoll_defconfig
 
-          # a17-9 hardening: drop the kprobe subsystem entirely (its only
-          # user on 4.14 was the KSU selinux_hide slow_avc_audit hook, which
-          # faulted and caused the bootloop), match the previously working
-          # kernel (SCS off), and turn on SELinux audit logging (AUDITSYSCALL
-          # stays off) so denials are visible when debugging freezes/apps.
+          # Keep KPROBES enabled for tracing/eBPF. The KSU selinux_hide
+          # slow_avc_audit kprobe remains disabled by the patch above, so
+          # enabling the subsystem does not reintroduce the 4.14 bootloop.
+          # SCS stays off; AUDIT on, AUDITSYSCALL off.
           ./scripts/config --file out/.config \
-            -d KPROBES \
+            -e KPROBES \
+            -e KPROBE_EVENTS \
+            -e BPF_EVENTS \
+            -e USB_CONFIGFS_RNDIS \
             -d SHADOW_CALL_STACK \
             -e AUDIT \
             -e UNMAP_KERNEL_AT_EL0 \
@@ -93,18 +95,18 @@ jobs:
             olddefconfig
 
           echo "=== selected config ==="
-          grep -E '^CONFIG_(KSU|KPROBES|PID_NS|UTS_NS|IPC_NS|USER_NS|SYSVIPC|DEVTMPFS|FHANDLE|MACVLAN|IP6_NF_NAT|MEMCG|MEMCG_SWAP|FAIR_GROUP_SCHED|CFS_BANDWIDTH|AUDIT|AUDITSYSCALL|SHADOW_CALL_STACK|VMAP_STACK|FAKE_UNAME_5_10|VM_EVENT_COUNTERS|UNMAP_KERNEL_AT_EL0|LOG_BUF_SHIFT)=' out/.config || true
-          grep -E '^# CONFIG_(MEMCG_SWAP|CFS_BANDWIDTH|KPROBES|SHADOW_CALL_STACK|AUDITSYSCALL) is not set' out/.config || true
+          grep -E '^CONFIG_(KSU|KPROBES|KPROBE_EVENTS|BPF_EVENTS|USB_CONFIGFS_RNDIS|PID_NS|UTS_NS|IPC_NS|USER_NS|SYSVIPC|DEVTMPFS|FHANDLE|MACVLAN|IP6_NF_NAT|MEMCG|MEMCG_SWAP|FAIR_GROUP_SCHED|CFS_BANDWIDTH|AUDIT|AUDITSYSCALL|SHADOW_CALL_STACK|VMAP_STACK|FAKE_UNAME_5_10|VM_EVENT_COUNTERS|UNMAP_KERNEL_AT_EL0|LOG_BUF_SHIFT)=' out/.config || true
+          grep -E '^# CONFIG_(MEMCG_SWAP|CFS_BANDWIDTH|SHADOW_CALL_STACK|AUDITSYSCALL) is not set' out/.config || true
 
           # Droidspaces + KernelSU requirements.  MEMCG + FAIR_GROUP_SCHED
           # are required for Android 17's cgroup v2 memory/cpu controllers;
           # without them init/zygote stall right after post-fs-data.
-          for opt in PID_NS UTS_NS IPC_NS USER_NS SYSVIPC DEVTMPFS FHANDLE MACVLAN IP6_NF_NAT KSU KSU_TAMPER_SYSCALL_TABLE KSU_LSM_SECURITY_HOOKS MEMCG FAIR_GROUP_SCHED AUDIT FAKE_UNAME_5_10 VM_EVENT_COUNTERS UNMAP_KERNEL_AT_EL0; do
+          for opt in PID_NS UTS_NS IPC_NS USER_NS SYSVIPC DEVTMPFS FHANDLE MACVLAN IP6_NF_NAT KSU KSU_TAMPER_SYSCALL_TABLE KSU_LSM_SECURITY_HOOKS MEMCG FAIR_GROUP_SCHED AUDIT FAKE_UNAME_5_10 VM_EVENT_COUNTERS UNMAP_KERNEL_AT_EL0 KPROBES KPROBE_EVENTS BPF_EVENTS USB_CONFIGFS_RNDIS; do
             grep -q "^CONFIG_${opt}=y" out/.config || { echo "ERROR: CONFIG_${opt} is not enabled"; exit 1; }
           done
 
-          # Keep these left out (freeze / policy / kprobe-fault class).
-          for opt in MEMCG_SWAP CFS_BANDWIDTH KPROBES SHADOW_CALL_STACK AUDITSYSCALL; do
+          # Keep these left out (freeze / policy / hardening class).
+          for opt in MEMCG_SWAP CFS_BANDWIDTH SHADOW_CALL_STACK AUDITSYSCALL; do
             if grep -q "^CONFIG_${opt}=y" out/.config; then
               echo "ERROR: CONFIG_${opt} unexpectedly enabled"
               exit 1
@@ -216,8 +218,14 @@ jobs:
             boot-cmdline override (the device DTB still carries kpti=off).
             Droidspaces/Shizuku configuration is unchanged.
           - Kept the FT8756 probe resume/init fix (dead-until-screen-cycle).
-          - KPROBES disabled, SHADOW_CALL_STACK disabled, AUDIT enabled
-            (AUDITSYSCALL off) so SELinux denials are logged for app/freeze debugging.
+          - KPROBES enabled (with KPROBE_EVENTS/BPF_EVENTS) for tracing and
+            eBPF tooling. The KSU selinux_hide slow_avc_audit kprobe remains
+            disabled, so the 4.14 bootloop path is not reintroduced.
+            SHADOW_CALL_STACK remains disabled; AUDIT is on and AUDITSYSCALL off.
+          - USB Arsenal: f_hid now exposes the writable bInterval configfs
+            attribute, enabling `hid start --interval N`.
+          - RNDIS function enabled for older Windows hosts (NCM remains the
+            default tether function).
           - MEMCG + FAIR_GROUP_SCHED on; MEMCG_SWAP / CFS_BANDWIDTH off.
           - Droidspaces: namespaces, SysV IPC, devtmpfs, FHANDLE, macvlan, IPv6 NAT
           - KernelSU integrated (official manager-compatible)
